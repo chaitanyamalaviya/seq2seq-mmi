@@ -140,13 +140,14 @@ valid_order = [x*args.minibatch_size for x in range(int(len(valid_data)/args.min
 
 # run training loop
 word_count = sent_count = cum_loss = 0.0
-_start = time.time()
+
 try:
     for ITER in range(args.epochs):
         s2s.epoch = ITER
         random.shuffle(train_order)
         sample_num = 0
-
+        log_start = time.time()
+        _start = time.time()
         for i, sid in enumerate(train_order):
 
             #Retrieving batch from training data
@@ -155,55 +156,53 @@ try:
             sample_num += 1
 
             if sample_num % (args.log_train_every_n/args.minibatch_size) == 0:
-                print ITER, sample_num, " ",
+                print("[training_set] Epoch:", ITER, "Batch:", sample_num)
                 trainer.status()
-                print "Loss:", cum_loss / word_count if word_count != 0 else None,
-                print "Time elapsed:", (time.time() - _start),
-                _start = time.time()
+                print("Loss:", cum_loss / word_count, "Time elapsed:", (time.time() - _start) ,"WPS:", word_count/(time.time() - log_start))
                 sample = s2s.generate(batched_src[0], sampled=False)
                 if sample: print src_vocab.pp(batched_src[0], ' '), tgt_vocab.pp(batched_tgt[0], ' '), tgt_vocab.pp(sample, ' '),
-                word_count = sent_count = cum_loss = cum_bleu = 0.0
+                word_count = sent_count = cum_loss = 0.0
+                log_start = time.time()
                 print
             # end of test logging
 
             if sample_num % (args.log_valid_every_n/args.minibatch_size) == 0:
-                v_word_count = v_sent_count = v_cum_loss = v_cum_bleu = v_cum_em = v_cum_perp = 0.0
+                v_word_count = v_sent_count = v_cum_loss = v_cum_bleu = v_cum_em = 0.0
                 v_start = time.time()
                 for vid in valid_order:
                     batched_v_src = [tup[0] for tup in valid_data[vid : vid + args.minibatch_size]]
-                    batched_v_tgt = [tup[0] for tup in valid_data[vid : vid + args.minibatch_size]]
+                    batched_v_tgt = [tup[1] for tup in valid_data[vid : vid + args.minibatch_size]]
                     v_loss = s2s.get_batch_loss(batched_v_src, batched_v_tgt)
                     v_cum_loss += v_loss.scalar_value()
-                    v_cum_perp += s2s.get_perplexity(batched_v_src[0], batched_v_tgt[0])
-                    v_cum_em += s2s.get_em(batched_v_src[0], batched_v_tgt[0])
+                    # v_cum_em += s2s.get_em(batched_v_src, batched_v_tgt)
                     # v_cum_bleu += s2s.get_bleu(v_src, v_tgt, args.beam_size)
-                    v_word_count += sum([len(s)-1 for s in batched_v_src])
+                    v_word_count += sum([(len(src_sent) - 1) for src_sent in batched_v_src])
                     v_sent_count += args.minibatch_size
-                print "[Validation "+str(sample_num) + "]\t" + \
-                      "Loss: "+str(v_cum_loss / v_char_count) + "\t" + \
-                      "Perp: "+str(v_cum_perp / v_sent_count) + "\t" + \
-                      "BLEU: "+str(v_cum_bleu / v_sent_count) + "\t" + \
-                      "EM: "  +str(v_cum_em   / v_sent_count) + "\t" + \
-                      "Time: "+str(time.time() - v_start),
-                if args.output:
-                    print "(logging to", args.output + ")"
-                    with open(args.output, "a") as outfile:
+                print("[Validation Set"+str(sample_num) + "]\t" + \
+                      "Loss: "+str(v_cum_loss / v_word_count) + "\t" + \
+                      "Perplexity: "+str(math.exp(v_cum_loss / v_word_count)) + "\t" + \
+                      # "BLEU: "+str(v_cum_bleu / v_sent_count) + "\t" + \
+                      # "EM: "  +str(v_cum_em   / v_sent_count) + "\t" + \
+                      "Time elapsed: "+str(time.time() - v_start))
+                if args.log_output:
+                    print("(logging to", args.log_output + ")")
+                    with open(args.log_output, "a") as outfile:
                         outfile.write(str(ITER) + "\t" + \
                                       str(sample_num) + "\t" + \
-                                      str(v_cum_loss / v_char_count) + "\t" + \
-                                      str(v_cum_perp / v_sent_count) + "\t" + \
-                                      str(v_cum_em   / v_sent_count) + "\t" + \
-                                      str(v_cum_bleu / v_sent_count) + "\n")
-                print "\n"
+                                      str(v_cum_loss / v_word_count) + "\t" + \
+                                      str(math.exp(v_cum_loss / v_word_count)) + "\t" + \
+                                      # str(v_cum_em   / v_sent_count) + "\t" + \
+                                      # str(v_cum_bleu / v_sent_count) + "\n")
+                print
                 if args.save:
-                    print "saving checkpoint..."
-                    s2s.save(args.save+".checkpoint")
+                    print("saving checkpoint...")
+                    s2s.save(args.save + ".checkpoint")
             # end of validation logging
-            
+
             # loss = s2s.get_loss(src, tgt)
             loss = s2s.get_batch_loss(batched_src, batched_tgt)
             cum_loss += loss.value()
-            word_count += sum([len(s)-1 for s in batched_src])
+            word_count += sum([(len(s)-1) for s in batched_src])
             sent_count += args.minibatch_size
             loss.backward()
             trainer.update(args.learning_rate)

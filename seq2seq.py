@@ -107,17 +107,14 @@ class Seq2SeqBasic(Seq2SeqTemplate):
         vectors = [dynet.concatenate(list(p)) for p in zip(fwd_vectors, bwd_vectors)]
         return vectors
 
-    def encode_batch_seq(self, src_seq, src_seq_rev, sentLengths):
+    def encode_batch_seq(self, src_seq, src_seq_rev):
         ### POSSIBLE BUG IN THIS FUNCTION => MASK NOT USED : Need to fix
         # (padded tokens should not contribute to the last hidden state)
 
         # transduce returns list of output expressions for each time step
         fwd_vectors = self.enc_fwd_lstm.initial_state().transduce(src_seq)
-        bwd_vectors = self.enc_bwd_lstm.initial_state().transduce(src_seq_rev)
-        bwd_vectors = list(reversed(bwd_vectors))
-
-        vectors = [dynet.concatenate(list(p)) for p in zip(fwd_vectors, bwd_vectors)]
-        return vectors
+        bwd_vectors = list(reversed(self.enc_bwd_lstm.initial_state().transduce(src_seq_rev)))
+        return dynet.concatenate([fwd_vectors[-1], bwd_vectors[-1]])
 
     def decode(self, encoding, input, output, alpha_loss):
         src_toks = [self.src_vocab[tok] for tok in input]
@@ -133,7 +130,7 @@ class Seq2SeqBasic(Seq2SeqTemplate):
 
         sent = []
         for tok in tgt_toks:
-            out_vector = w * s.output() + b
+            out_vector = dynet.affine_transform([b, w, s.output()])
             probs = dynet.softmax(out_vector)
             cross_ent_loss = -dynet.log(dynet.pick(probs, tok.i))
             if self.args.loss_function == "bilingual":
@@ -174,7 +171,7 @@ class Seq2SeqBasic(Seq2SeqTemplate):
         for wid, mask in zip(wids, masks):
 
             # calculate the softmax and loss
-            score = w * s.output() + b
+            score = dynet.affine_transform([b, w, s.output()])
             loss = dynet.pickneglogsoftmax_batch(score, wid)
 
             # mask the loss if at least one sentence is shorter than maxSentLength
@@ -203,7 +200,7 @@ class Seq2SeqBasic(Seq2SeqTemplate):
 
         out = []
         for _ in range(5*len(src)):
-            out_vector = w * s.output() + b
+            out_vector = dynet.affine_transform([b, w, s.output()])
             probs = dynet.softmax(out_vector)
             selection = np.argmax(probs.value())
             out.append(self.tgt_vocab[selection])
@@ -234,7 +231,7 @@ class Seq2SeqBasic(Seq2SeqTemplate):
                     embed_vector = self.tgt_lookup[beam["out"][-1].i]
                     s = beam["state"].add_input(embed_vector)
 
-                out_vector = w * s.output() + b
+                out_vector = dynet.affine_transform([b, w, s.output()])
                 probs = dynet.softmax(out_vector)
                 probs = probs.vec_value()
 
@@ -262,7 +259,7 @@ class Seq2SeqBasic(Seq2SeqTemplate):
 
     def get_batch_loss(self, input_batch, output_batch):
 
-        # mask sentences
+        dynet.renew_cg()
 
         # Dimension: maxSentLength * minibatch_size
         wids = []
@@ -286,18 +283,10 @@ class Seq2SeqBasic(Seq2SeqTemplate):
 
         embedded_batch = self.embed_batch_seq(wids)
         embedded_batch_reverse = self.embed_batch_seq(wids_reversed)
-        encoded_batch = self.encode_batch_seq(embedded_batch, embedded_batch_reverse, sent_lengths)[-1]
+        encoded_batch = self.encode_batch_seq(embedded_batch, embedded_batch_reverse)
 
         # pass last hidden state of encoder to decoder
         return self.decode_batch(encoded_batch, output_batch)
-
-
-    def get_perplexity(self, input, output, beam_n=5):
-        dynet.renew_cg()
-        embedded = self.embed_seq(input)
-        encoded = self.encode_seq(embedded)[-1]
-        loss = self.decode(encoded, output)
-        return math.exp(loss.value()/(len(output)-1))
 
     def get_bleu(self, input, output, beam_n=5):
         guess = self.generate(input, sampled=False)
@@ -312,31 +301,6 @@ class Seq2SeqBasic(Seq2SeqTemplate):
         output_str = [tok.s for tok in output]
         ans = 1 if input_str == output_str else 0
         return ans
-
-    def evaluate(self, test_data):
-        count = 0
-        total_distance = 0
-        perWordError = 0
-        truePhonemeLength = 0
-
-        for src, target in test_data:
-            dynet.renew_cg()
-            symbols = self.generate(src)
-            symbols = [symbol.s for symbol in symbols if symbol!=self.tgt_vocab.END_TOK]
-            target = [t for t in target if t!=self.tgt_vocab.END_TOK.s]
-            # symbols = [symbol.strip(string.digits) for symbol in symbols]
-            # target = [t.strip(string.digits) for t in target]
-            # print "Generated: ", symbols, "True: " , target
-            dist = distance.levenshtein(symbols, target)
-            # print "Levenshtein: ", dist
-            total_distance += dist
-            truePhonemeLength += len(target)
-            if dist!=0:
-                perWordError += 1
-            count = count + 1
-
-        print "Phoneme error rate: ", total_distance/truePhonemeLength
-        print "Average per-word error: ", perWordError/count
 
     def tsne_embeddings(self):
 
@@ -420,7 +384,7 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
                                           ]))
         loss = []
         for tok in tgt_toks:
-            out_vector = w * s.output() + b
+            out_vector = dynet.affine_transform([b, w, s.output()])
             probs = dynet.softmax(out_vector)
             loss.append(-dynet.log(dynet.pick(probs, tok.i)))
             embed_vector = self.tgt_lookup[tok.i]
@@ -454,7 +418,7 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
         for wid, mask in zip(wids, masks):
 
             # calculate the softmax and loss
-            score = w * s.output() + b
+            score = dynet.affine_transform([b, w, s.output()])
             loss = dynet.pickneglogsoftmax_batch(score, wid)
 
             # mask the loss if at least one sentence is shorter
@@ -497,7 +461,7 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
                                           ]))
         out = []
         for i in range(1+len(src_seq)*5):
-            out_vector = w * s.output() + b
+            out_vector = dynet.affine_transform([b, w, s.output()])
             probs = dynet.softmax(out_vector)
             probs = probs.vec_value()
             next_symbol = sample(probs) if sampled else max(enumerate(probs), key=lambda x:x[1])[0]
@@ -537,7 +501,7 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
                     inp = dynet.concatenate([embed_vector, attn_vector])
                     s = beam["state"].add_input(inp)
 
-                out_vector = w * s.output() + b
+                out_vector = dynet.affine_transform([b, w, s.output()])
                 probs = dynet.softmax(out_vector)
                 probs = probs.vec_value()
 
@@ -556,30 +520,15 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
         return [beam["out"] for beam in completed_beams]
 
 
-    def encode_batch_seq(self, src_seq, src_seq_rev, sentLengths):
+    def encode_batch_seq(self, src_seq, src_seq_rev):
 
-        # [src[i] for src in src_seq for i in range(len(src_seq[0]))]
         fwd_vectors = self.enc_fwd_lstm.initial_state().transduce(src_seq)
         bwd_vectors = self.enc_bwd_lstm.initial_state().transduce(src_seq_rev)
-
-        bwd_vectors_T = dynet.transpose(bwd_vectors)
-
-        i = 0
-        for vec, sentLen in izip(bwd_vectors_T,range(len(sentLengths))):
-            sent_vec = vec[:sentLen][::-1]
-            vec[:sentLen] = sent_vec
-            bwd_vectors_T[i] = vec
-            i += 1
-
-        bwd_vectors = dynet.transpose(bwd_vectors_T)
-
-        vectors = [dynet.concatenate(list(p)) for p in zip(fwd_vectors, bwd_vectors)]
-        return vectors
-
+        return [dynet.concatenate(list(p)) for p in zip(fwd_vectors, list(reversed(bwd_vectors)))]
 
     def get_batch_loss(self, input_batch, output_batch):
 
-        # mask sentences
+        dynet.renew_cg()
 
         # Dimension: maxSentLength * minibatch_size
         wids = []
@@ -592,7 +541,6 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
         #No of words processed in this batch
         tot_words = 0
         maxSentLength = max([len(sent) for sent in input_batch])
-        sent_lengths =[len(sent) for sent in input_batch]
 
         for j in range(maxSentLength):
             wids.append([(self.src_vocab[sent[j]].i if len(sent)>j else self.src_vocab.END_TOK.i) for sent in input_batch])
@@ -603,7 +551,7 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
 
         embedded_batch = self.embed_batch_seq(wids)
         embedded_batch_reverse = self.embed_batch_seq(wids_reversed)
-        encoded_batch = self.encode_batch_seq(embedded_batch, embedded_batch_reverse, sent_lengths)
+        encoded_batch = self.encode_batch_seq(embedded_batch, embedded_batch_reverse)
 
         # pass all hidden states of encoder to decoder (for attention)
         return self.decode_batch(encoded_batch, output_batch)
@@ -614,13 +562,6 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
         encoded = self.encode_seq(embedded)
         return self.decode(encoded, output)
 
-    def get_perplexity(self, input, output):
-        dynet.renew_cg()
-        embedded = self.embed_seq(input)
-        encoded = self.encode_seq(embedded)
-        loss = self.decode(encoded, output)
-        return math.exp(loss.value()/(len(output)-1))
-
     def get_bleu(self, input, output, beam_n=5):
         guesses = self.beam_search_generate(input, beam_n)
         input_strs = [[tok.s for tok in guess] for guess in guesses]
@@ -628,30 +569,6 @@ class Seq2SeqBiRNNAttn(Seq2SeqBasic):
         ans = max([BLEU.sentence_bleu(input_str, output_strs) for input_str in input_strs])
         return ans
 
-    def evaluate(self, test_data):
-        count = 0
-        total_distance = 0
-        perWordError = 0
-        truePhonemeLength = 0
-
-        for src, target in test_data:
-            dynet.renew_cg()
-            symbols = self.generate(src)
-            symbols = [symbol.s for symbol in symbols if symbol!=self.tgt_vocab.END_TOK]
-            target = [t for t in target if t!=self.tgt_vocab.END_TOK.s]
-            # symbols = [symbol.strip(string.digits) for symbol in symbols]
-            # target = [t.strip(string.digits) for t in target]
-            # print "Generated: ", symbols, "True: " , target
-            dist = distance.levenshtein(symbols, target)
-            # print "Levenshtein: ", dist
-            total_distance += dist
-            truePhonemeLength += len(target)
-            if dist!=0:
-                perWordError += 1
-            count = count + 1
-
-        print "Phoneme error rate: ", total_distance/truePhonemeLength
-        print "Average per-word error: ", perWordError/count
 
     def tsne_embeddings(self, test_data):
 
